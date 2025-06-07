@@ -12,8 +12,11 @@ import path from 'path';
 import { app, BrowserWindow, shell, ipcMain } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import log from 'electron-log';
+import fs from 'fs';
 import MenuBuilder from './menu';
 import { resolveHtmlPath } from './util';
+import { downloadDriveFile } from './driveDownloader.js';
+import { downloadDriveVideo } from './downloadViaPuppeteer.js';
 
 class AppUpdater {
   constructor() {
@@ -23,12 +26,69 @@ class AppUpdater {
   }
 }
 
-let mainWindow: BrowserWindow | null = null;
+let mainWindow = null;
 
 ipcMain.on('ipc-example', async (event, arg) => {
-  const msgTemplate = (pingPong: string) => `IPC test: ${pingPong}`;
+  const msgTemplate = (pingPong) => `IPC test: ${pingPong}`;
   console.log(msgTemplate(arg));
   event.reply('ipc-example', msgTemplate('pong'));
+});
+
+ipcMain.handle('download-drive', async (_event, url) => {
+  try {
+    const filePath = await downloadDriveVideo(url, mainWindow);
+    return { success: true, path: filePath };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('open-downloads-folder', async () => {
+  const folder = path.join(app.getPath('desktop'), 'videos-descargados');
+  await shell.openPath(folder);
+});
+
+ipcMain.handle('get-downloaded-videos-count', () => {
+  const folder = path.join(app.getPath('desktop'), 'videos-descargados');
+  if (!fs.existsSync(folder)) return 0;
+  return fs.readdirSync(folder).length;
+});
+
+ipcMain.handle('clear-downloaded', async () => {
+  const folder = path.join(app.getPath('desktop'), 'videos-descargados');
+
+  const tryDeleteWithRetry = async (filePath, maxRetries = 10, delayMs = 300) => {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await fs.promises.unlink(filePath);
+        console.log(`🗑️ Archivo eliminado: ${filePath}`);
+        return;
+      } catch (err) {
+        if (err.code === 'EBUSY' && attempt < maxRetries) {
+          console.warn(`🔄 Archivo ocupado (${attempt}/${maxRetries}): ${filePath}`);
+          await new Promise((res) => setTimeout(res, delayMs));
+        } else {
+          throw err;
+        }
+      }
+    }
+  };
+
+  try {
+    if (!fs.existsSync(folder)) {
+      return { success: false, error: 'La carpeta no existe.' };
+    }
+
+    const files = fs.readdirSync(folder);
+    for (const file of files) {
+      const fullPath = path.join(folder, file);
+      await tryDeleteWithRetry(fullPath);
+    }
+
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
 if (process.env.NODE_ENV === 'production') {
@@ -65,7 +125,7 @@ const createWindow = async () => {
     ? path.join(process.resourcesPath, 'assets')
     : path.join(__dirname, '../../assets');
 
-  const getAssetPath = (...paths: string[]): string => {
+  const getAssetPath = (...paths) => {
     return path.join(RESOURCES_PATH, ...paths);
   };
 
@@ -78,6 +138,10 @@ const createWindow = async () => {
       preload: app.isPackaged
         ? path.join(__dirname, 'preload.js')
         : path.join(__dirname, '../../.erb/dll/preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      webSecurity: false,
     },
   });
 

@@ -1,3 +1,4 @@
+/* eslint-disable prettier/prettier */
 // Disable no-unused-vars, broken for spread args
 /* eslint no-unused-vars: off */
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
@@ -22,6 +23,10 @@ const electronHandler = {
       ipcRenderer.once(channel, (_event, ...args) => func(...args));
     },
   },
+  downloadFromDrive: (url) => ipcRenderer.invoke('download-drive', url),
+  clearDownloadedVideos: () => ipcRenderer.invoke('clear-downloaded'),
+  openDownloadsFolder: () => ipcRenderer.invoke('open-downloads-folder'),
+  getDownloadedVideosCount: () => ipcRenderer.invoke('get-downloaded-videos-count'),
 };
 
 contextBridge.exposeInMainWorld('electron', electronHandler);
