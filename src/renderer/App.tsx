@@ -143,27 +143,20 @@ export default function App() {
     );
   };
 
-  const handleConfirmClose = (confirm) => {
+  const handleConfirmClose = async (confirm) => {
     setConfirmOpen(false);
     if (confirm && pendingLoad) {
       if (pendingLoad.type === 'url') {
-        const url = transformDropboxUrl(pendingLoad.value.trim());
-        setVideoUrl(url);
-        setLocalFile(null);
-        setError(null);
-        setHasPlayed(false);
+        await tryLoadNew('url', pendingLoad.value.trim(), true);
       } else if (pendingLoad.type === 'file') {
-        setLocalFile(pendingLoad.value);
-        setVideoUrl('');
-        setError(null);
-        setHasPlayed(false);
+        await tryLoadNew('file', pendingLoad.value, true);
       }
     }
     setPendingLoad(null);
   };
 
-  const tryLoadNew = async (type, value) => {
-    if ((videoUrl || localFile) && hasPlayed) {
+  const tryLoadNew = async (type, value, omitValidation = false) => {
+    if (!omitValidation && (videoUrl || localFile) && hasPlayed) {
       setPendingLoad({ type, value });
       setConfirmOpen(true);
       return;
