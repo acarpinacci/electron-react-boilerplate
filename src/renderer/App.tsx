@@ -20,6 +20,31 @@ import {
   DialogActions,
 } from '@mui/material';
 import DownloadProgress from './downloadProgress/downloadProgress.js';
+import {
+  getCrossedPauseBoundary,
+  PAUSE_BOUNDARY_EPSILON_SECONDS,
+} from './pauseBoundary';
+
+type WebkitAudioContextWindow = Window &
+  typeof globalThis & {
+    webkitAudioContext?: typeof AudioContext;
+  };
+
+export const playBeep = () => {
+  const AudioContextConstructor =
+    window.AudioContext ||
+    (window as WebkitAudioContextWindow).webkitAudioContext;
+
+  if (!AudioContextConstructor) return;
+
+  const ctx = new AudioContextConstructor();
+  const osc = ctx.createOscillator();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(800, ctx.currentTime);
+  osc.connect(ctx.destination);
+  osc.start();
+  osc.stop(ctx.currentTime + 0.2);
+};
 
 export default function App() {
   const prefersDarkMode = true;
@@ -72,8 +97,10 @@ export default function App() {
     [darkMode],
   );
 
-  const videoRef = useRef(null);
-  const timeoutRef = useRef(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const previousVideoTimeRef = useRef<number | null>(null);
+  const isSeekingRef = useRef(false);
+  const lastAutoPauseBoundaryRef = useRef<number | null>(null);
   const fileInputRef = useRef(null);
 
   // Estado para controlar si ya se reprodujo video actual alguna vez
@@ -83,20 +110,6 @@ export default function App() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pendingLoad, setPendingLoad] = useState(null); // { type: 'url'|'file', value }
 
-  useEffect(() => {
-    return () => clearTimeout(timeoutRef.current);
-  }, []);
-
-  const playBeep = () => {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(800, ctx.currentTime);
-    osc.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.2);
-  };
-
   const isDriveUrl = (url) => url.includes('drive.google.com/file/d/');
 
   const refreshVideoCount = async () => {
@@ -104,21 +117,72 @@ export default function App() {
     setVideoCount(count);
   };
 
+  const resetAutoPauseBoundaries = () => {
+    previousVideoTimeRef.current = null;
+    lastAutoPauseBoundaryRef.current = null;
+  };
+
+  const getPlaybackReferenceTime = () => {
+    const video = videoRef.current;
+    const lastBoundary = lastAutoPauseBoundaryRef.current;
+
+    if (!video) return null;
+    if (
+      lastBoundary !== null &&
+      video.currentTime < lastBoundary - PAUSE_BOUNDARY_EPSILON_SECONDS
+    ) {
+      lastAutoPauseBoundaryRef.current = null;
+      return video.currentTime;
+    }
+
+    if (
+      lastBoundary !== null &&
+      Math.abs(video.currentTime - lastBoundary) <=
+        PAUSE_BOUNDARY_EPSILON_SECONDS
+    ) {
+      return lastBoundary;
+    }
+
+    return video.currentTime;
+  };
+
+  const updatePlaybackReferenceTime = () => {
+    previousVideoTimeRef.current = getPlaybackReferenceTime();
+  };
+
   const handlePlay = () => {
     if (!hasPlayed) setHasPlayed(true);
     setError(null);
-    clearTimeout(timeoutRef.current);
-    timeoutRef.current = setTimeout(() => {
-      if (videoRef.current) {
-        videoRef.current.pause();
-        playBeep();
-      }
-    }, pauseInterval * 1000);
+    updatePlaybackReferenceTime();
   };
 
-  const handlePause = () => {
-    clearTimeout(timeoutRef.current);
+  const handleTimeUpdate = () => {
+    const video = videoRef.current;
+    if (!video || video.paused || isSeekingRef.current) return;
+
+    const currentTime = video.currentTime;
+    const previousTime = previousVideoTimeRef.current ?? currentTime;
+    const crossedBoundary = getCrossedPauseBoundary(
+      previousTime,
+      currentTime,
+      pauseInterval,
+      video.duration,
+    );
+
+    if (crossedBoundary === null) {
+      previousVideoTimeRef.current = currentTime;
+      return;
+    }
+
+    lastAutoPauseBoundaryRef.current = crossedBoundary;
+    previousVideoTimeRef.current = crossedBoundary;
+    video.currentTime = crossedBoundary;
+    video.pause();
   };
+
+  useEffect(() => {
+    updatePlaybackReferenceTime();
+  }, [pauseInterval]);
 
   const transformDropboxUrl = (url) => {
     try {
@@ -135,6 +199,8 @@ export default function App() {
 
   const onLoadVideo = () => {
     setError(null);
+    resetAutoPauseBoundaries();
+    updatePlaybackReferenceTime();
   };
 
   const onErrorVideo = () => {
@@ -164,6 +230,7 @@ export default function App() {
 
     if (type === 'url') {
       const trimmed = value.trim();
+      resetAutoPauseBoundaries();
 
       // Caso especial: link de Google Drive
       if (isDriveUrl(trimmed)) {
@@ -198,6 +265,7 @@ export default function App() {
     }
 
     if (type === 'file') {
+      resetAutoPauseBoundaries();
       setLocalFile(value);
       setVideoUrl('');
       setError(null);
@@ -321,7 +389,14 @@ export default function App() {
               width="100%"
               controls
               onPlay={handlePlay}
-              onPause={handlePause}
+              onTimeUpdate={handleTimeUpdate}
+              onSeeking={() => {
+                isSeekingRef.current = true;
+              }}
+              onSeeked={() => {
+                isSeekingRef.current = false;
+                updatePlaybackReferenceTime();
+              }}
               onError={onErrorVideo}
               onLoadedData={onLoadVideo}
               style={{ borderRadius: 8 }}
